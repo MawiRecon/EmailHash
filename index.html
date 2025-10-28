@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Email → SHA‑256 Hasher (Client‑Side)</title>
+  <!-- Tailwind via CDN for quick styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <meta name="description" content="Paste emails on the left, click HASH, get normalized SHA‑256 hashes on the right. 100% client‑side." />
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100">
+  <header class="max-w-6xl mx-auto px-4 py-8">
+    <h1 class="text-2xl sm:text-3xl font-semibold">SHA‑256 Email Hasher</h1>
+    <p class="mt-2 text-slate-300">Paste emails (one per line) on the left. Hash occurs locally in your browser. Nothing is uploaded, saved, or stored.</p>
+    <noscript>
+      <p class="mt-3 p-3 rounded bg-red-900/30 border border-red-700">This tool needs JavaScript enabled.</p>
+    </noscript>
+  </header>
+
+  <main class="max-w-6xl mx-auto px-4 pb-16">
+    <!-- Controls -->
+    <section class="mb-4 grid gap-3 sm:flex sm:items-center sm:justify-between">
+      <div class="flex gap-3 flex-wrap items-center">
+        <button id="btnHash" class="px-4 py-2 rounded-2xl bg-emerald-500 hover:bg-emerald-600 active:bg-emerald-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed">HASH</button>
+        <button id="btnClear" class="px-4 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 font-medium">Clear</button>
+        <button id="btnSample" class="px-4 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 font-medium">Fill sample</button>
+      </div>
+      <div class="flex gap-4 flex-wrap items-center text-sm">
+        <label class="inline-flex items-center gap-2"><input id="optDedup" type="checkbox" class="size-4" checked> Deduplicate</label>
+        <label class="inline-flex items-center gap-2"><input id="optHeader" type="checkbox" class="size-4" checked> Include CSV header</label>
+        <label class="inline-flex items-center gap-2"><input id="optInvalid" type="checkbox" class="size-4" checked> Keep invalid rows (marked <span class="font-mono">INVALID</span>)</label>
+      </div>
+    </section>
+
+    <!-- Panels -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <!-- Left: input -->
+      <div class="bg-slate-900/60 rounded-2xl border border-slate-800 shadow-sm">
+        <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 class="font-medium">Input emails</h2>
+            <p class="text-xs text-slate-400">One per line. Spaces are removed automatically. Normalization applied.</p>
+          </div>
+          <div class="text-xs text-slate-400"><span id="inCount">0</span> rows</div>
+        </div>
+         <textarea id="inBox" class="w-full h-[340px] p-4 bg-transparent outline-none resize-y font-mono text-sm" 
+         placeholder="Don_Draper@scdp.com 
+David_Ogilvy@aol.com 
+Leo_Burnett@me.com" spellcheck="false"></textarea>
+
+        <div class="p-4 pt-0 text-xs text-slate-400">Normalization: lowercase, trim spaces, remove dots in the local part, drop “+tag”, strip trailing dots in domain.</div>
+      </div>
+
+      <!-- Right: output -->
+      <div class="bg-slate-900/60 rounded-2xl border border-slate-800 shadow-sm">
+        <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h2 class="font-medium">Output</h2>
+            <p class="text-xs text-slate-400">CSV preview (<span class="font-mono">email,sha256</span>)</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btnCopy" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium">Copy</button>
+            <button id="btnDownload" class="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium">Download CSV</button>
+          </div>
+        </div>
+        <textarea id="outBox" class="w-full h-[340px] p-4 bg-transparent outline-none resize-y font-mono text-xs" readonly spellcheck="false" placeholder="Hashes will appear here..."></textarea>
+        <div class="p-4 pt-0 text-xs text-slate-400"><span id="outCount">0</span> rows</div>
+      </div>
+    </section>
+
+    <!-- Status -->
+    <section class="mt-6" id="statusWrap" hidden>
+      <div id="status" class="text-sm p-3 rounded-xl border"></div>
+    </section>
+  </main>
+
+  <footer class="max-w-6xl mx-auto px-4 pb-10 text-xs text-slate-500">
+    <p>Privacy: All hashing is performed with the Web Crypto API entirely in your browser. No data leaves your device.</p>
+  </footer>
+
+  <script>
+    // --- Capability check
+    const cryptoOK = window.crypto && window.crypto.subtle && window.TextEncoder;
+    const statusWrap = document.getElementById('statusWrap');
+    const statusEl = document.getElementById('status');
+    function setStatus(msg, ok=true){
+      statusWrap.hidden = false;
+      statusEl.textContent = msg;
+      statusEl.className = `text-sm p-3 rounded-xl border ${ok ? 'bg-emerald-500/10 border-emerald-600 text-emerald-200' : 'bg-red-500/10 border-red-700 text-red-200'}`;
+    }
+    if(!cryptoOK){
+      setStatus('Your browser does not support the Web Crypto API needed for SHA-256. Try a current Chrome, Edge, Firefox, or Safari.', false);
+    }
+
+    // --- UI elements
+    const inBox = document.getElementById('inBox');
+    const outBox = document.getElementById('outBox');
+    const btnHash = document.getElementById('btnHash');
+    const btnClear = document.getElementById('btnClear');
+    const btnSample = document.getElementById('btnSample');
+    const btnCopy = document.getElementById('btnCopy');
+    const btnDownload = document.getElementById('btnDownload');
+    const inCount = document.getElementById('inCount');
+    const outCount = document.getElementById('outCount');
+    const optDedup = document.getElementById('optDedup');
+    const optHeader = document.getElementById('optHeader');
+    const optInvalid = document.getElementById('optInvalid');
+
+    // --- Helpers (mirror Python normalize_email)
+    function normalizeEmail(raw){
+      if(!raw) return '';
+      let s = raw.toLowerCase().trim().replaceAll(' ', '');
+      if(!s.includes('@')) return '';
+      const [localRaw, domainRaw] = s.split('@');
+      let local = localRaw.replaceAll('.', '');
+      if(local.includes('+')) local = local.split('+', 1)[0];
+      let domain = domainRaw.replace(/\.+$/, ''); // strip trailing dots
+      return `${local}@${domain}`;
+    }
+
+    async function sha256Hex(str){
+      const data = new TextEncoder().encode(str);
+      const digest = await crypto.subtle.digest('SHA-256', data);
+      const bytes = new Uint8Array(digest);
+      return [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function splitLines(s){
+      return s.replace(/\r\n?/g, '\n').split('\n');
+    }
+
+    function updateInCount(){
+      const rows = splitLines(inBox.value).filter(v => v.trim().length>0);
+      inCount.textContent = rows.length;
+    }
+    inBox.addEventListener('input', updateInCount);
+
+    // --- Core hashing flow
+    async function runHash(){
+      if(!cryptoOK){ return; }
+      btnHash.disabled = true;
+      setStatus('Hashing…');
+
+      const rawRows = splitLines(inBox.value)
+        .map(r => r.trim())
+        .filter(r => r.length>0);
+
+      const seen = new Set();
+      const rows = [];
+      for(const r of rawRows){
+        const n = normalizeEmail(r);
+        if(!n){
+          if(optInvalid.checked){ rows.push({email:r, hash:'INVALID', invalid:true}); }
+          continue;
+        }
+        if(optDedup.checked){
+          if(seen.has(n)) continue;
+          seen.add(n);
+        }
+        rows.push({email:n, invalid:false});
+      }
+
+      // Hash sequentially to avoid overwhelming slower devices (still fast)
+      for(const row of rows){
+        if(row.invalid){ continue; }
+        row.hash = await sha256Hex(row.email);
+      }
+
+      const includeHeader = optHeader.checked;
+      const outLines = [];
+      if(includeHeader) outLines.push('email,sha256');
+      for(const {email, hash, invalid} of rows){
+        const h = invalid ? 'INVALID' : (hash || '');
+        outLines.push(`${email},${h}`);
+      }
+
+      outBox.value = outLines.join('\n');
+      outCount.textContent = includeHeader ? Math.max(outLines.length-1, 0) : outLines.length;
+      setStatus(`Done. Hashed ${rows.filter(r=>!r.invalid).length} valid email(s). ${rows.filter(r=>r.invalid).length} invalid.`);
+      btnHash.disabled = false;
+    }
+
+    // --- Actions
+    btnHash.addEventListener('click', runHash);
+
+    btnClear.addEventListener('click', () => {
+      inBox.value = '';
+      outBox.value = '';
+      inCount.textContent = '0';
+      outCount.textContent = '0';
+      setStatus('Cleared.');
+    });
+
+    btnSample.addEventListener('click', () => {
+      inBox.value = [
+        'normaltest@gmail.com',
+        'hyphen-test@yahoo.com',
+        'Test.Caps@live.com',
+        'test with space@gmail.com',
+        'not-an-email',
+      ].join('\n');
+      updateInCount();
+      setStatus('Sample loaded. Click HASH.');
+    });
+
+    btnCopy.addEventListener('click', async () => {
+      try{
+        await navigator.clipboard.writeText(outBox.value || '');
+        setStatus('Output copied to clipboard.');
+      } catch(e){
+        setStatus('Could not copy (clipboard blocked). You can select and copy manually.', false);
+      }
+    });
+
+    btnDownload.addEventListener('click', () => {
+      const blob = new Blob([outBox.value || ''], {type: 'text/csv;charset=utf-8'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const ts = new Date().toISOString().replace(/[:.]/g,'-');
+      a.download = `hashes-${ts}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus('CSV downloaded.');
+    });
+
+    // Init
+    updateInCount();
+  </script>
+</body>
+</html>
